@@ -5,10 +5,13 @@ import Navbar from "@/components/Navbar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { FileText, PlusCircle, Loader2, Download, Eye } from "lucide-react";
+import { FileText, PlusCircle, Loader2, Download, Search } from "lucide-react";
+import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import MinuteModal from "@/components/MinuteModal";
+import NewMinuteModal from "@/components/NewMinuteModal";
 
 interface Profile {
   id: string;
@@ -25,9 +28,9 @@ interface Minute {
   location: string;
   status: string;
   pdf_url: string | null;
-  profiles: {
+  responsible?: {
     full_name: string;
-  };
+  } | null;
 }
 
 const Minutes = () => {
@@ -37,6 +40,10 @@ const Minutes = () => {
   const [minutes, setMinutes] = useState<Minute[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>("all");
+  const [search, setSearch] = useState<string>("");
+
+  const [selectedMinute, setSelectedMinute] = useState<Minute | null>(null);
+  const [showNewMinute, setShowNewMinute] = useState(false);
 
   useEffect(() => {
     checkAuthAndLoadData();
@@ -44,8 +51,10 @@ const Minutes = () => {
 
   const checkAuthAndLoadData = async () => {
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
       if (!session) {
         navigate("/auth");
         return;
@@ -58,7 +67,7 @@ const Minutes = () => {
         .single();
 
       if (profileError) throw profileError;
-      
+
       if (profileData.role !== "admin" && profileData.role !== "leader") {
         toast({
           title: "Acesso negado",
@@ -83,18 +92,23 @@ const Minutes = () => {
     }
   };
 
-  const loadMinutes = async () => {
+  const loadMinutes = async (searchTerm: string = "") => {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from("minutes")
-        .select(`
-          *,
-          profiles:responsible_user_id (
-            full_name
-          )
-        `)
+        .select(
+          `
+          id, number, title, type, date, location, status, pdf_url,
+          responsible:profiles!fk_minutes_user (full_name)
+        `
+        )
         .order("date", { ascending: false });
 
+      if (searchTerm.trim()) {
+        query = query.ilike("number", `%${searchTerm}%`);
+      }
+
+      const { data, error } = await query;
       if (error) throw error;
       setMinutes(data || []);
     } catch (error: any) {
@@ -119,14 +133,22 @@ const Minutes = () => {
 
   const getStatusBadge = (status: string) => {
     if (status === "assinada_arquivada") {
-      return <Badge className="bg-success">Assinada e Arquivada</Badge>;
+      return <Badge className="bg-green-600">Assinada e Arquivada</Badge>;
     }
     return <Badge variant="secondary">Em Andamento</Badge>;
   };
 
-  const filteredMinutes = filter === "all" 
-    ? minutes 
-    : minutes.filter(m => m.type === filter);
+  const filteredMinutes = minutes.filter((m) => {
+    if (filter === "all") return true;
+    if (filter === "em_andamento") return m.status !== "assinada_arquivada";
+    return m.type === filter;
+  });
+
+  const handleSearchChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setSearch(value);
+    await loadMinutes(value);
+  };
 
   if (loading) {
     return (
@@ -138,9 +160,15 @@ const Minutes = () => {
 
   return (
     <div className="min-h-screen bg-muted">
-      <Navbar userRole={profile?.role} userName={profile?.full_name} />
-      
+      <Navbar
+        userRole={profile?.role}
+        userName={profile?.full_name}
+        userPhoto={profile?.photo_url}
+      />
+
+
       <main className="container mx-auto px-4 py-8">
+        {/* Cabeçalho e Botão Nova Ata */}
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
           <div>
             <h1 className="text-4xl font-bold text-foreground mb-2">Atas</h1>
@@ -148,55 +176,48 @@ const Minutes = () => {
               Controle e arquivamento de atas de reuniões
             </p>
           </div>
-          
+
           {profile?.role === "admin" && (
-            <Button onClick={() => navigate("/atas/nova")}>
+            <Button onClick={() => setShowNewMinute(true)}>
               <PlusCircle className="h-5 w-5 mr-2" />
               Nova Ata
             </Button>
           )}
         </div>
 
-        {/* Filters */}
-        <div className="flex flex-wrap gap-2 mb-6">
-          <Button
-            variant={filter === "all" ? "default" : "outline"}
-            onClick={() => setFilter("all")}
-            size="sm"
-          >
-            Todas
-          </Button>
-          <Button
-            variant={filter === "conselho" ? "default" : "outline"}
-            onClick={() => setFilter("conselho")}
-            size="sm"
-          >
-            Conselho
-          </Button>
-          <Button
-            variant={filter === "assembleia" ? "default" : "outline"}
-            onClick={() => setFilter("assembleia")}
-            size="sm"
-          >
-            Assembleia
-          </Button>
-          <Button
-            variant={filter === "ministerio" ? "default" : "outline"}
-            onClick={() => setFilter("ministerio")}
-            size="sm"
-          >
-            Ministério
-          </Button>
-          <Button
-            variant={filter === "celula" ? "default" : "outline"}
-            onClick={() => setFilter("celula")}
-            size="sm"
-          >
-            Célula
-          </Button>
+        {/* Campo de busca */}
+        <div className="flex items-center gap-2 mb-6">
+          <Search className="h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Pesquisar por número da ata..."
+            value={search}
+            onChange={handleSearchChange}
+            className="max-w-sm"
+          />
         </div>
 
-        {/* Minutes List */}
+        {/* Filtros */}
+        <div className="flex flex-wrap gap-2 mb-6">
+          {[
+            { key: "all", label: "Todas" },
+            { key: "em_andamento", label: "Em Andamento" },
+            { key: "conselho", label: "Conselho" },
+            { key: "assembleia", label: "Assembleia" },
+            { key: "ministerio", label: "Ministério" },
+            { key: "celula", label: "Célula" },
+          ].map((f) => (
+            <Button
+              key={f.key}
+              variant={filter === f.key ? "default" : "outline"}
+              onClick={() => setFilter(f.key)}
+              size="sm"
+            >
+              {f.label}
+            </Button>
+          ))}
+        </div>
+
+        {/* Lista de atas */}
         <div className="grid grid-cols-1 gap-4">
           {filteredMinutes.length === 0 ? (
             <Card>
@@ -209,7 +230,11 @@ const Minutes = () => {
             </Card>
           ) : (
             filteredMinutes.map((minute) => (
-              <Card key={minute.id} className="hover:shadow-lg transition-shadow">
+              <Card
+                key={minute.id}
+                className="hover:shadow-lg transition-shadow cursor-pointer"
+                onClick={() => setSelectedMinute(minute)}
+              >
                 <CardHeader>
                   <div className="flex justify-between items-start">
                     <div className="flex-1">
@@ -220,31 +245,32 @@ const Minutes = () => {
                       </div>
                       <CardTitle className="text-xl mb-2">{minute.title}</CardTitle>
                       <div className="text-sm text-muted-foreground space-y-1">
-                        <p>Data: {format(new Date(minute.date), "dd 'de' MMMM 'de' yyyy", { locale: ptBR })}</p>
+                        <p>
+                          Data:{" "}
+                          {format(new Date(minute.date), "dd 'de' MMMM 'de' yyyy", {
+                            locale: ptBR,
+                          })}
+                        </p>
                         <p>Local: {minute.location}</p>
-                        <p>Responsável: {minute.profiles.full_name}</p>
+                        <p>
+                          Responsável:{" "}
+                          {minute.responsible?.full_name || "Não informado"}
+                        </p>
                       </div>
                     </div>
-                    <div className="flex gap-2">
-                      {minute.pdf_url && (
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          onClick={() => window.open(minute.pdf_url!, "_blank")}
-                          title="Baixar PDF"
-                        >
-                          <Download className="h-4 w-4" />
-                        </Button>
-                      )}
+                    {minute.pdf_url && (
                       <Button
                         variant="outline"
                         size="icon"
-                        onClick={() => navigate(`/atas/${minute.id}`)}
-                        title="Ver detalhes"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          window.open(minute.pdf_url!, "_blank");
+                        }}
+                        title="Baixar PDF"
                       >
-                        <Eye className="h-4 w-4" />
+                        <Download className="h-4 w-4" />
                       </Button>
-                    </div>
+                    )}
                   </div>
                 </CardHeader>
               </Card>
@@ -252,6 +278,21 @@ const Minutes = () => {
           )}
         </div>
       </main>
+
+      {/* Modais */}
+      <MinuteModal
+        open={!!selectedMinute}
+        onClose={() => setSelectedMinute(null)}
+        minute={selectedMinute}
+        profile={profile}
+        onUpdated={() => loadMinutes(search)}
+      />
+
+      <NewMinuteModal
+        open={showNewMinute}
+        onClose={() => setShowNewMinute(false)}
+        onCreated={() => loadMinutes(search)}
+      />
     </div>
   );
 };
