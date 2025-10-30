@@ -17,6 +17,8 @@ import {
   MapPin,
   Calendar,
   Eye,
+  Map as MapIcon,
+  List,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -37,6 +39,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+// 🗺️ Importa Leaflet
+import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
+import "leaflet/dist/leaflet.css";
+
 interface Profile {
   id: string;
   full_name: string;
@@ -51,6 +57,8 @@ interface Cell {
   meeting_day: string | null;
   meeting_time: string | null;
   description: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
   leader: {
     full_name: string;
   };
@@ -68,6 +76,8 @@ const Cells = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [openDialog, setOpenDialog] = useState(false);
+  const [viewMode, setViewMode] = useState<"list" | "map">("list"); // 👈 novo estado para alternar visão
+
   const [formData, setFormData] = useState({
     name: "",
     address: "",
@@ -109,10 +119,8 @@ const Cells = () => {
         .order("full_name");
 
       setLeaders(leadersData || []);
-
       await loadCells();
     } catch (error: any) {
-      console.error("Error:", error);
       toast({
         title: "Erro",
         description: error.message,
@@ -149,7 +157,6 @@ const Cells = () => {
     if (!profile) return;
     try {
       setSaving(true);
-
       const { data, error } = await supabase
         .from("cells")
         .insert({
@@ -177,7 +184,6 @@ const Cells = () => {
         description: "",
         co_leader_id: "",
       });
-
       await loadCells();
     } catch (error: any) {
       toast({
@@ -205,9 +211,8 @@ const Cells = () => {
       <Navbar
         userRole={profile?.role}
         userName={profile?.full_name}
-        userPhoto={profile?.photo_url}
+        userPhoto={(profile as any)?.photo_url}
       />
-
 
       <main className="container mx-auto px-4 py-8">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
@@ -218,225 +223,278 @@ const Cells = () => {
             </p>
           </div>
 
-          {canCreateCell && (
-            <Dialog open={openDialog} onOpenChange={setOpenDialog}>
-              <DialogTrigger asChild>
-                <Button>
-                  <PlusCircle className="h-5 w-5 mr-2" />
-                  Nova Célula
-                </Button>
-              </DialogTrigger>
+          <div className="flex items-center gap-3">
+            <Button
+              variant={viewMode === "list" ? "default" : "outline"}
+              onClick={() => setViewMode("list")}
+            >
+              <List className="h-4 w-4 mr-2" /> Lista
+            </Button>
+            <Button
+              variant={viewMode === "map" ? "default" : "outline"}
+              onClick={() => setViewMode("map")}
+            >
+              <MapIcon className="h-4 w-4 mr-2" /> Mapa
+            </Button>
 
-              <DialogContent className="max-w-lg">
-                <DialogHeader>
-                  <DialogTitle>Nova Célula</DialogTitle>
-                </DialogHeader>
+            {canCreateCell && (
+              <Dialog open={openDialog} onOpenChange={setOpenDialog}>
+                <DialogTrigger asChild>
+                  <Button>
+                    <PlusCircle className="h-5 w-5 mr-2" />
+                    Nova Célula
+                  </Button>
+                </DialogTrigger>
 
-                <div className="space-y-4">
-                  <div>
-                    <Label>Nome da célula</Label>
-                    <Input
-                      value={formData.name}
-                      onChange={(e) =>
-                        setFormData({ ...formData, name: e.target.value })
-                      }
-                      placeholder="Ex: Célula Família Esperança"
-                    />
-                  </div>
+                <DialogContent className="max-w-lg">
+                  <DialogHeader>
+                    <DialogTitle>Nova Célula</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-4">
+                    <div>
+                      <Label>Nome da célula</Label>
+                      <Input
+                        value={formData.name}
+                        onChange={(e) =>
+                          setFormData({ ...formData, name: e.target.value })
+                        }
+                        placeholder="Ex: Célula Família Esperança"
+                      />
+                    </div>
 
-                  <div>
-                    <Label>Endereço</Label>
-                    <Input
-                      value={formData.address}
-                      onChange={(e) =>
-                        setFormData({ ...formData, address: e.target.value })
-                      }
-                      placeholder="Rua, número, bairro..."
-                    />
-                  </div>
+                    <div>
+                      <Label>Endereço</Label>
+                      <Input
+                        value={formData.address}
+                        onChange={(e) =>
+                          setFormData({ ...formData, address: e.target.value })
+                        }
+                        placeholder="Rua, número, bairro..."
+                      />
+                    </div>
 
-                  <div>
-                    <Label>Bairro</Label>
-                    <Input
-                      value={formData.neighborhood}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          neighborhood: e.target.value,
-                        })
-                      }
-                      placeholder="Ex: Jardim das Palmeiras"
-                    />
-                  </div>
+                    <div>
+                      <Label>Bairro</Label>
+                      <Input
+                        value={formData.neighborhood}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            neighborhood: e.target.value,
+                          })
+                        }
+                        placeholder="Ex: Jardim das Palmeiras"
+                      />
+                    </div>
 
-                  <div className="flex gap-4">
-                    <div className="flex-1">
-                      <Label>Dia da reunião</Label>
+                    <div className="flex gap-4">
+                      <div className="flex-1">
+                        <Label>Dia da reunião</Label>
+                        <Select
+                          value={formData.meeting_day}
+                          onValueChange={(v) =>
+                            setFormData({ ...formData, meeting_day: v })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selecione o dia" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {[
+                              "Domingo",
+                              "Segunda",
+                              "Terça",
+                              "Quarta",
+                              "Quinta",
+                              "Sexta",
+                              "Sábado",
+                            ].map((d) => (
+                              <SelectItem key={d} value={d}>
+                                {d}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="flex-1">
+                        <Label>Horário</Label>
+                        <Input
+                          type="time"
+                          value={formData.meeting_time}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              meeting_time: e.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <Label>Co-líder</Label>
                       <Select
-                        value={formData.meeting_day}
+                        value={formData.co_leader_id}
                         onValueChange={(v) =>
-                          setFormData({ ...formData, meeting_day: v })
+                          setFormData({ ...formData, co_leader_id: v })
                         }
                       >
                         <SelectTrigger>
-                          <SelectValue placeholder="Selecione o dia" />
+                          <SelectValue placeholder="Selecione um co-líder" />
                         </SelectTrigger>
                         <SelectContent>
-                          {[
-                            "Domingo",
-                            "Segunda",
-                            "Terça",
-                            "Quarta",
-                            "Quinta",
-                            "Sexta",
-                            "Sábado",
-                          ].map((d) => (
-                            <SelectItem key={d} value={d}>
-                              {d}
+                          {leaders.map((l) => (
+                            <SelectItem key={l.id} value={l.id}>
+                              {l.full_name}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
                     </div>
 
-                    <div className="flex-1">
-                      <Label>Horário</Label>
-                      <Input
-                        type="time"
-                        value={formData.meeting_time}
+                    <div>
+                      <Label>Descrição</Label>
+                      <Textarea
+                        value={formData.description}
                         onChange={(e) =>
                           setFormData({
                             ...formData,
-                            meeting_time: e.target.value,
+                            description: e.target.value,
                           })
                         }
+                        placeholder="Breve descrição da célula (opcional)"
                       />
                     </div>
-                  </div>
 
-                  <div>
-                    <Label>Co-líder</Label>
-                    <Select
-                      value={formData.co_leader_id}
-                      onValueChange={(v) =>
-                        setFormData({ ...formData, co_leader_id: v })
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Selecione um co-líder" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {leaders.map((l) => (
-                          <SelectItem key={l.id} value={l.id}>
-                            {l.full_name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div>
-                    <Label>Descrição</Label>
-                    <Textarea
-                      value={formData.description}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          description: e.target.value,
-                        })
-                      }
-                      placeholder="Breve descrição da célula (opcional)"
-                    />
-                  </div>
-
-                  <div className="flex justify-end">
-                    <Button onClick={handleSaveCell} disabled={saving}>
-                      {saving ? (
-                        <>
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Salvando...
-                        </>
-                      ) : (
-                        "Salvar"
-                      )}
-                    </Button>
-                  </div>
-                </div>
-              </DialogContent>
-            </Dialog>
-          )}
-        </div>
-
-        {/* Cells Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {cells.length === 0 ? (
-            <Card className="col-span-full">
-              <CardContent className="py-12 text-center">
-                <Users className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                <p className="text-lg text-muted-foreground">
-                  Nenhuma célula cadastrada
-                </p>
-              </CardContent>
-            </Card>
-          ) : (
-            cells.map((cell) => (
-              <Card key={cell.id} className="hover:shadow-lg transition-shadow">
-                <CardHeader>
-                  <CardTitle className="flex items-start justify-between">
-                    <span className="text-lg">{cell.name}</span>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => navigate(`/celulas/${cell.id}`)}
-                    >
-                      <Eye className="h-4 w-4" />
-                    </Button>
-                  </CardTitle>
-                  <CardDescription>
-                    <div className="space-y-2 mt-2">
-                      <div className="flex items-start gap-2">
-                        <Users className="h-4 w-4 mt-0.5 flex-shrink-0" />
-                        <div className="text-sm">
-                          <p className="font-medium">
-                            Líder: {cell.leader.full_name}
-                          </p>
-                          {cell.co_leader && (
-                            <p className="text-muted-foreground">
-                              Co-líder: {cell.co_leader.full_name}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-
-                      {cell.neighborhood && (
-                        <div className="flex items-center gap-2 text-sm">
-                          <MapPin className="h-4 w-4 flex-shrink-0" />
-                          <span>{cell.neighborhood}</span>
-                        </div>
-                      )}
-
-                      {cell.meeting_day && cell.meeting_time && (
-                        <div className="flex items-center gap-2 text-sm">
-                          <Calendar className="h-4 w-4 flex-shrink-0" />
-                          <span>
-                            {cell.meeting_day} às {cell.meeting_time}
-                          </span>
-                        </div>
-                      )}
+                    <div className="flex justify-end">
+                      <Button onClick={handleSaveCell} disabled={saving}>
+                        {saving ? (
+                          <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            Salvando...
+                          </>
+                        ) : (
+                          "Salvar"
+                        )}
+                      </Button>
                     </div>
-                  </CardDescription>
-                </CardHeader>
-                {cell.description && (
-                  <CardContent>
-                    <p className="text-sm text-muted-foreground line-clamp-2">
-                      {cell.description}
-                    </p>
-                  </CardContent>
-                )}
-              </Card>
-            ))
-          )}
+                  </div>
+                </DialogContent>
+              </Dialog>
+            )}
+          </div>
         </div>
+
+        {/* 🔄 Alterna entre lista e mapa */}
+        {viewMode === "list" ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {cells.length === 0 ? (
+              <Card className="col-span-full">
+                <CardContent className="py-12 text-center">
+                  <Users className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <p className="text-lg text-muted-foreground">
+                    Nenhuma célula cadastrada
+                  </p>
+                </CardContent>
+              </Card>
+            ) : (
+              cells.map((cell) => (
+                <Card
+                  key={cell.id}
+                  className="hover:shadow-lg transition-shadow"
+                >
+                  <CardHeader>
+                    <CardTitle className="flex items-start justify-between">
+                      <span className="text-lg">{cell.name}</span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => navigate(`/celulas/${cell.id}`)}
+                      >
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                    </CardTitle>
+                    <CardDescription>
+                      <div className="space-y-2 mt-2">
+                        <div className="flex items-start gap-2">
+                          <Users className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                          <div className="text-sm">
+                            <p className="font-medium">
+                              Líder: {cell.leader.full_name}
+                            </p>
+                            {cell.co_leader && (
+                              <p className="text-muted-foreground">
+                                Co-líder: {cell.co_leader.full_name}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        {cell.neighborhood && (
+                          <div className="flex items-center gap-2 text-sm">
+                            <MapPin className="h-4 w-4 flex-shrink-0" />
+                            <span>{cell.neighborhood}</span>
+                          </div>
+                        )}
+
+                        {cell.meeting_day && cell.meeting_time && (
+                          <div className="flex items-center gap-2 text-sm">
+                            <Calendar className="h-4 w-4 flex-shrink-0" />
+                            <span>
+                              {cell.meeting_day} às {cell.meeting_time}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </CardDescription>
+                  </CardHeader>
+                  {cell.description && (
+                    <CardContent>
+                      <p className="text-sm text-muted-foreground line-clamp-2">
+                        {cell.description}
+                      </p>
+                    </CardContent>
+                  )}
+                </Card>
+              ))
+            )}
+          </div>
+        ) : (
+          // 🌍 Mapa de células
+          <div className="mt-4 rounded-xl overflow-hidden border">
+            <MapContainer
+              center={[-11.856, -55.509]} // Sinop-MT
+              zoom={12}
+              style={{ height: "75vh", width: "100%" }}
+            >
+              <TileLayer
+                attribution='&copy; OpenStreetMap contributors'
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
+              {cells
+                .filter((c) => c.latitude && c.longitude)
+                .map((cell) => (
+                  <Marker
+                    key={cell.id}
+                    position={[cell.latitude!, cell.longitude!]}
+                  >
+                    <Popup>
+                      <strong>{cell.name}</strong>
+                      <br />
+                      Líder: {cell.leader.full_name}
+                      {cell.co_leader && <br />}
+                      {cell.co_leader && `Co-líder: ${cell.co_leader.full_name}`}
+                      <br />
+                      {cell.meeting_day && `${cell.meeting_day} às ${cell.meeting_time}`}
+                      <br />
+                      {cell.address}
+                    </Popup>
+                  </Marker>
+                ))}
+            </MapContainer>
+          </div>
+        )}
       </main>
     </div>
   );

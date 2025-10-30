@@ -89,10 +89,10 @@ const NewCell = () => {
             const { data, error } = await supabase
                 .from("cells")
                 .select(`
-    *,
-    leader:profiles!fk_cells_leader(full_name),
-    co_leader:profiles!fk_cells_co_leader(full_name)
-  `)
+                        *,
+                        leader:profiles!fk_cells_leader(full_name),
+                        co_leader:profiles!fk_cells_co_leader(full_name)
+                    `)
                 .order("name");
 
 

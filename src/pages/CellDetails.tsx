@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import Navbar from "@/components/Navbar";
@@ -44,12 +44,20 @@ import {
     Calendar,
     PlusCircle,
     Trash2,
+    Locate,
 } from "lucide-react";
+
+import 'leaflet/dist/leaflet.css';
+import L from 'leaflet';
+import { MapContainer, TileLayer, Marker, useMapEvents, useMap } from 'react-leaflet';
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
+import markerIconUrl from 'leaflet/dist/images/marker-icon.png';
+import markerShadow from 'leaflet/dist/images/marker-shadow.png';
 
 interface Profile {
     id: string;
     full_name: string;
-    role: "admin" | "leader" | "member";
+    role: "admin" | "leader" | "Líder" | "member";
 }
 
 interface Cell {
@@ -62,14 +70,14 @@ interface Cell {
     description: string | null;
     leader_id: string | null;
     co_leader_id: string | null;
-    leader: { full_name: string };
-    co_leader: { full_name: string } | null;
+    Líder: { full_name: string };
+    co_Líder: { full_name: string } | null;
 }
 
 interface MemberRow {
     id: string;
     member_id: string;
-    role?: "member" | "visitor" | "co-lider" | "leader";
+    role?: "member" | "visitor" | "Co-líder" | "Líder";
     joined_at: string;
     profile: { full_name: string };
 }
@@ -109,11 +117,298 @@ const CellDetails = () => {
     });
     const [loading, setLoading] = useState(true);
 
-    // Permissions
+    // LOCATION state (CEP, address fields and map coords)
+    const [cep, setCep] = useState("");
+    const [logradouro, setLogradouro] = useState("");
+    const [bairro, setBairro] = useState("");
+    const [cidade, setCidade] = useState("");
+    const [uf, setUf] = useState("");
+    const [numero, setNumero] = useState("");
+    const [coords, setCoords] = useState<[number, number] | null>(null);
+
+    // Default Leaflet marker icon (works with bundlers)
+    const markerIcon = L.icon({
+        iconUrl: markerIconUrl as unknown as string,
+        iconRetinaUrl: markerIcon2x as unknown as string,
+        shadowUrl: markerShadow as unknown as string,
+        iconSize: [25, 41],
+        iconAnchor: [12, 41],
+        popupAnchor: [1, -34],
+        tooltipAnchor: [16, -28],
+        shadowSize: [41, 41],
+    });
+
+    // CEP → ViaCEP + Geocoding com múltiplas APIs
+    const buscarCep = async () => {
+        if (!cep) return;
+
+        console.log('🔎 Iniciando busca por CEP:', cep);
+
+        try {
+            const res = await fetch(`https://viacep.com.br/ws/${cep.replace("-", "")}/json/`);
+            const data = await res.json();
+
+            console.log('📮 Resposta ViaCEP:', data);
+
+            if (data.erro) {
+                toast({ title: "CEP não encontrado", variant: "destructive" });
+                return;
+            }
+            const log = data.logradouro || "";
+            const bai = data.bairro || "";
+            const cid = data.localidade || "";
+            const ufv = data.uf || "";
+
+            console.log('📍 Endereço extraído:', { logradouro: log, bairro: bai, cidade: cid, uf: ufv });
+
+            setLogradouro(log);
+            setBairro(bai);
+            setCidade(cid);
+            setUf(ufv);
+            toast({ title: "Endereço encontrado!" });
+
+            // Buscar coordenadas com múltiplas APIs
+            console.log('🌍 Iniciando busca de coordenadas...');
+            let coords = await buscarCoordenadas(log, bai, cid, ufv, cep);
+
+            if (coords) {
+                console.log('✅ Coordenadas finais:', coords);
+                setCoords(coords);
+            } else {
+                console.log('❌ Nenhuma API conseguiu encontrar coordenadas');
+                toast({
+                    title: "Não foi possível obter coordenadas automaticamente",
+                    description: "Clique no mapa para definir a localização manualmente.",
+                    variant: "default"
+                });
+            }
+        } catch (err) {
+            console.error('❌ Erro ao buscar CEP:', err);
+            toast({ title: "Erro ao buscar CEP", variant: "destructive" });
+        }
+    };
+
+    // Função para buscar coordenadas com múltiplas APIs (fallback em cascata)
+    const buscarCoordenadas = async (
+        logradouro: string,
+        bairro: string,
+        cidade: string,
+        uf: string,
+        cep: string
+    ): Promise<[number, number] | null> => {
+        // API Keys das variáveis de ambiente
+        const GEOAPIFY_KEY = import.meta.env.VITE_GEOAPIFY_API_KEY;
+        // const OPENCAGE_KEY = import.meta.env.VITE_OPENCAGE_API_KEY; // DESATIVADO
+
+        // Tentativa 1: Geoapify (se tiver API key)
+        if (GEOAPIFY_KEY) {
+            const coords = await buscarComGeoapify(logradouro, cidade, uf, GEOAPIFY_KEY);
+            if (coords) {
+                toast({ title: "Coordenadas encontradas!", description: "Via Geoapify API" });
+                return coords;
+            }
+        }
+
+        // Tentativa 2: Nominatim (grátis, sem API key)
+        const coords = await buscarComNominatim(logradouro, bairro, cidade, uf, cep);
+        if (coords) {
+            toast({ title: "Coordenadas encontradas!", description: "Via OpenStreetMap" });
+            return coords;
+        }
+
+        return null;
+    };
+
+    // Geoapify API - Principal API de Geocoding
+    const buscarComGeoapify = async (
+        logradouro: string,
+        cidade: string,
+        uf: string,
+        apiKey: string
+    ): Promise<[number, number] | null> => {
+        try {
+            // Montar query com endereço completo
+            const q = [logradouro, cidade, uf, 'Brasil'].filter(Boolean).join(', ');
+
+            const params = new URLSearchParams({
+                text: q,
+                apiKey: apiKey,
+                lang: 'pt',
+                limit: '1',
+                filter: 'countrycode:br', // Filtrar apenas Brasil
+                bias: 'countrycode:br',    // Priorizar Brasil
+            });
+
+            console.log('🔍 Buscando com Geoapify:', q);
+
+            const res = await fetch(`https://api.geoapify.com/v1/geocode/search?${params}`);
+            const data = await res.json();
+
+            console.log('📍 Resposta Geoapify:', data);
+
+            if (data.features && data.features.length > 0) {
+                const [lng, lat] = data.features[0].geometry.coordinates;
+                const properties = data.features[0].properties;
+
+                console.log('✅ Coordenadas encontradas:', { lat, lng, endereco: properties.formatted });
+
+                return [lat, lng];
+            } else {
+                console.log('⚠️ Geoapify não retornou resultados');
+            }
+        } catch (err) {
+            console.error('❌ Geoapify falhou:', err);
+        }
+        return null;
+    };
+
+    // Nominatim (OpenStreetMap) API - Fallback Grátis
+    const buscarComNominatim = async (
+        logradouro: string,
+        bairro: string,
+        cidade: string,
+        uf: string,
+        cep: string
+    ): Promise<[number, number] | null> => {
+        console.log('🗺️ Tentando Nominatim como fallback...');
+
+        // Usar proxy CORS para desenvolvimento local
+        const CORS_PROXY = 'https://corsproxy.io/?';
+        const headers = { 'User-Agent': 'IPR-Sinop-Connect/1.0' };
+
+        // Tentativa 1: Endereço estruturado completo
+        if (logradouro && cidade && uf) {
+            try {
+                const params = new URLSearchParams({
+                    format: 'json',
+                    street: logradouro,
+                    city: cidade,
+                    state: uf,
+                    country: 'Brasil',
+                    limit: '1',
+                    addressdetails: '1',
+                });
+
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                const url = `https://nominatim.openstreetmap.org/search?${params}`;
+                const res = await fetch(CORS_PROXY + encodeURIComponent(url));
+                const data = await res.json();
+
+                console.log('📍 Nominatim (tentativa 1 - estruturado):', data);
+
+                if (Array.isArray(data) && data.length > 0) {
+                    const { lat, lon } = data[0];
+                    if (lat && lon) {
+                        console.log('✅ Coordenadas Nominatim:', { lat, lon });
+                        return [parseFloat(lat), parseFloat(lon)];
+                    }
+                }
+            } catch (err) {
+                console.log('⚠️ Nominatim tentativa 1 falhou:', err);
+            }
+        }
+
+        // Tentativa 2: Query simples (cidade + estado)
+        if (cidade && uf) {
+            try {
+                const q = `${cidade}, ${uf}, Brasil`;
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`;
+                const res = await fetch(CORS_PROXY + encodeURIComponent(url));
+                const data = await res.json();
+
+                console.log('📍 Nominatim (tentativa 2 - cidade):', data);
+
+                if (Array.isArray(data) && data.length > 0) {
+                    const { lat, lon } = data[0];
+                    if (lat && lon) {
+                        console.log('✅ Coordenadas aproximadas (cidade):', { lat, lon });
+                        return [parseFloat(lat), parseFloat(lon)];
+                    }
+                }
+            } catch (err) {
+                console.log('⚠️ Nominatim tentativa 2 falhou:', err);
+            }
+        }
+
+        // Tentativa 3: Por CEP
+        try {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&postalcode=${encodeURIComponent(cep.replace("-", ""))}&country=Brazil`;
+            const res = await fetch(CORS_PROXY + encodeURIComponent(url));
+            const data = await res.json();
+
+            console.log('📍 Nominatim (tentativa 3 - CEP):', data);
+
+            if (Array.isArray(data) && data.length > 0) {
+                const { lat, lon } = data[0];
+                if (lat && lon) {
+                    console.log('✅ Coordenadas por CEP:', { lat, lon });
+                    return [parseFloat(lat), parseFloat(lon)];
+                }
+            }
+        } catch (err) {
+            console.log('⚠️ Nominatim tentativa 3 falhou:', err);
+        }
+
+        console.log('❌ Nominatim: Nenhuma tentativa teve sucesso');
+        return null;
+    };
+
+    // Mapa → clique
+    const MapClickHandler = () => {
+        useMapEvents({
+            click: (e) => {
+                setCoords([e.latlng.lat, e.latlng.lng]);
+            },
+        });
+        return null;
+    };
+
+    const RecenterOnCoords = ({ coords }: { coords: [number, number] }) => {
+        const map = useMap();
+        useEffect(() => {
+            map.setView(coords, 16);
+        }, [coords, map]);
+        return null;
+    };
+
+    // Salvar localização
+    const salvarLocalizacao = async () => {
+        try {
+            if (!coords) {
+                toast({ title: "Selecione um ponto no mapa", variant: "destructive" });
+                return;
+            }
+            // validated update with error handling below
+            const { error } = await supabase
+                .from("cells")
+                .update({
+                    address: logradouro,
+                    number: numero || null,
+                    neighborhood: bairro || null,
+                    city: cidade || null,
+                    state: uf || null,
+                    latitude: coords[0],
+                    longitude: coords[1],
+                })
+                .eq("id", id as string);
+            if (error) {
+                toast({ title: "Erro ao salvar", description: error.message, variant: "destructive" });
+                return;
+            }
+            await loadCell();
+            toast({ title: "Localização atualizada com sucesso!" });
+        } catch (e: any) {
+            toast({ title: "Erro ao salvar", description: e.message, variant: "destructive" });
+        }
+    };
+
+    // permissões
     const canManage = useMemo(() => {
         if (!profile || !cell) return false;
         if (profile.role === "admin") return true;
-        if (profile.role === "leader" && profile.id === cell.leader_id) return true;
+        if ((profile.role === "Líder" || profile.role === "leader") && profile.id === cell.leader_id) return true;
         return false;
     }, [profile, cell]);
 
@@ -151,20 +446,64 @@ const CellDetails = () => {
     };
 
     const loadCell = async () => {
-        const { data, error } = await supabase
+        // 1. Buscar a célula
+        const { data: cellData, error: cellError } = await supabase
             .from("cells")
-            .select(`
-        *,
-        leader:profiles!fk_cells_leader(full_name),
-        co_leader:profiles!fk_cells_co_leader(full_name)
-      `)
+            .select("*")
             .eq("id", id)
             .single();
 
-        if (error) {
-            throw error;
+        if (cellError) {
+            throw cellError;
         }
-        setCell(data as Cell);
+
+        // 2. Buscar o líder
+        let liderData = null;
+        if (cellData.leader_id) {
+            const { data, error } = await supabase
+                .from("profiles")
+                .select("full_name")
+                .eq("id", cellData.leader_id)
+                .single();
+
+            if (!error && data) {
+                liderData = data;
+            }
+        }
+
+        // 3. Buscar o co-líder
+        let coLiderData = null;
+        if (cellData.co_leader_id) {
+            const { data, error } = await supabase
+                .from("profiles")
+                .select("full_name")
+                .eq("id", cellData.co_leader_id)
+                .single();
+
+            if (!error && data) {
+                coLiderData = data;
+            }
+        }
+
+        // 4. Combinar os dados
+        const combinedData = {
+            ...cellData,
+            Líder: liderData,
+            co_Líder: coLiderData,
+        };
+
+        setCell(combinedData as Cell);
+
+        // Initialize location fields if available on the record
+        const c: any = cellData || {};
+        setLogradouro(c.address || "");
+        setBairro(c.neighborhood || "");
+        setCidade(c.city || "");
+        setUf(c.state || "");
+        setNumero(c.number || "");
+        if (c.latitude && c.longitude) {
+            setCoords([Number(c.latitude), Number(c.longitude)]);
+        }
     };
 
     const loadMembers = async () => {
@@ -272,7 +611,7 @@ const CellDetails = () => {
     // ===== MEETINGS & ATTENDANCE =====
     const handleCreateMeeting = async () => {
         if (!newMeeting.meeting_date) {
-            toast({ title: "Data obrigatória", description: "Informe a data da reunião." });
+            toast({ title: "Data obrigatória", description: "Informe a data da reunião.", variant: "destructive" });
             return;
         }
         try {
@@ -326,7 +665,11 @@ const CellDetails = () => {
             // refetch meetings to reflect change
             await loadMeetings();
         } catch (error: any) {
-            toast({ title: "Erro ao marcar presença", description: error.message, variant: "destructive" });
+            toast({
+                title: "Falha ao realizar ação",
+                description: `Detalhes: ${error.message}`,
+                variant: "destructive"
+            });
         }
     };
 
@@ -344,7 +687,6 @@ const CellDetails = () => {
             </div>
         );
     }
-
 
     return (
         <div className="min-h-screen bg-muted">
@@ -365,9 +707,10 @@ const CellDetails = () => {
                         <TabsTrigger value="info">Informações</TabsTrigger>
                         <TabsTrigger value="members">Membros</TabsTrigger>
                         <TabsTrigger value="meetings">Frequência</TabsTrigger>
+                        <TabsTrigger value="location">Localização</TabsTrigger>
                     </TabsList>
 
-                    {/* ============ INFO ============ */}
+                    {/* ============ Info ============ */}
                     <TabsContent value="info" className="mt-4">
                         <Card>
                             <CardHeader>
@@ -385,9 +728,9 @@ const CellDetails = () => {
                                         {cell.meeting_day} {cell.meeting_time ? `às ${cell.meeting_time}` : ""}
                                     </p>
                                 )}
-                                <p><strong>Líder:</strong> {cell.leader?.full_name}</p>
-                                {cell.co_leader && (
-                                    <p><strong>Co-líder:</strong> {cell.co_leader.full_name}</p>
+                                <p><strong>Líder:</strong> {cell.Líder?.full_name}</p>
+                                {cell.co_Líder && (
+                                    <p><strong>Co-líder:</strong> {cell.co_Líder.full_name}</p>
                                 )}
                                 {cell.description && (
                                     <div className="pt-2">
@@ -536,7 +879,7 @@ const CellDetails = () => {
                                                 <CardHeader className="pb-2">
                                                     <CardTitle className="text-lg">
                                                         {new Date(meet.meeting_date).toLocaleDateString()}
-                                                        {meet.topic ? ` — ${meet.topic}` : ""}
+                                                        {meet.topic ? ` – ${meet.topic}` : ""}
                                                     </CardTitle>
                                                     {meet.notes && (
                                                         <CardDescription>{meet.notes}</CardDescription>
@@ -584,6 +927,69 @@ const CellDetails = () => {
                                         );
                                     })
                                 )}
+                            </CardContent>
+                        </Card>
+                    </TabsContent>
+
+                    {/* === Nova aba Localização === */}
+                    <TabsContent value="location" className="mt-4">
+                        <Card>
+                            <CardHeader>
+                                <CardTitle>Localização da Célula</CardTitle>
+                                <CardDescription>Busque pelo CEP e selecione o ponto no mapa</CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-4">
+                                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                                    <div>
+                                        <Label>CEP</Label>
+                                        <div className="flex gap-2">
+                                            <Input value={cep} onChange={(e) => setCep(e.target.value)} placeholder="78550-000" />
+                                            <Button onClick={buscarCep}>Buscar</Button>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <Label>Rua</Label>
+                                        <Input value={logradouro} readOnly />
+                                    </div>
+                                    <div>
+                                        <Label>Bairro</Label>
+                                        <Input value={bairro} readOnly />
+                                    </div>
+                                    <div>
+                                        <Label>Cidade</Label>
+                                        <Input value={cidade} readOnly />
+                                    </div>
+                                    <div>
+                                        <Label>UF</Label>
+                                        <Input value={uf} readOnly />
+                                    </div>
+                                    <div>
+                                        <Label>Número</Label>
+                                        <Input value={numero} onChange={(e) => setNumero(e.target.value)} placeholder="Ex: 429/A" />
+                                    </div>
+                                </div>
+
+                                <div className="h-[400px] rounded-md overflow-hidden border">
+                                    <MapContainer
+                                        center={coords || [-11.8604, -55.509]}
+                                        zoom={13}
+                                        style={{ height: "100%", width: "100%" }}
+                                    >
+                                        <TileLayer
+                                            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                                            attribution="© OpenStreetMap"
+                                        />
+                                        {coords && <Marker position={coords} icon={markerIcon} />}
+                                        {coords && <RecenterOnCoords coords={coords} />}
+                                        <MapClickHandler />
+                                    </MapContainer>
+                                </div>
+
+                                <div className="flex justify-end">
+                                    <Button onClick={salvarLocalizacao} disabled={!canManage}>
+                                        <Locate className="h-4 w-4 mr-2" /> Salvar alterações
+                                    </Button>
+                                </div>
                             </CardContent>
                         </Card>
                     </TabsContent>

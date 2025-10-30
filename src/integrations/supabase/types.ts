@@ -107,6 +107,11 @@ export type Database = {
           meeting_time: string | null
           name: string
           neighborhood: string | null
+          number: string | null
+          city: string | null
+          state: string | null
+          latitude: number | null
+          longitude: number | null
           updated_at: string
         }
         Insert: {
@@ -120,6 +125,11 @@ export type Database = {
           meeting_time?: string | null
           name: string
           neighborhood?: string | null
+          number?: string | null
+          city?: string | null
+          state?: string | null
+          latitude?: number | null
+          longitude?: number | null
           updated_at?: string
         }
         Update: {
@@ -133,6 +143,11 @@ export type Database = {
           meeting_time?: string | null
           name?: string
           neighborhood?: string | null
+          number?: string | null
+          city?: string | null
+          state?: string | null
+          latitude?: number | null
+          longitude?: number | null
           updated_at?: string
         }
         Relationships: [
